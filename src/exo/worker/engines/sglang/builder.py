@@ -266,6 +266,17 @@ def _sglang_quantization_arg(model_card: ModelCard) -> str | None:
     return None
 
 
+def _sglang_attention_backend_arg(model_card: ModelCard) -> str | None:
+    override = os.environ.get("EXO_SGLANG_ATTENTION_BACKEND")
+    if override is not None:
+        return override or None
+
+    if "gpt-oss" in str(model_card.model_id).lower():
+        return "triton"
+
+    return "flashinfer"
+
+
 @dataclass
 class SglangBuilder(Builder):
     model_id: ModelId
@@ -343,8 +354,7 @@ class SglangBuilder(Builder):
             os.environ.get("EXO_SGLANG_MEM_FRACTION_STATIC", "0.75"),
         ]
 
-        attention_backend = os.environ.get("EXO_SGLANG_ATTENTION_BACKEND", "flashinfer")
-        if attention_backend:
+        if attention_backend := _sglang_attention_backend_arg(model_card):
             cmd.extend(["--attention-backend", attention_backend])
 
         if model_card.trust_remote_code:

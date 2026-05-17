@@ -102,9 +102,13 @@ class FakeClient:
         self.closed = True
 
 
-def _model_card(*, quantization: str = "") -> ModelCard:
+def _model_card(
+    *,
+    model_id: str = "nvidia/Llama-3.1-8B-Instruct-FP4",
+    quantization: str = "",
+) -> ModelCard:
     return ModelCard(
-        model_id=ModelId("nvidia/Llama-3.1-8B-Instruct-FP4"),
+        model_id=ModelId(model_id),
         storage_size=Memory.from_bytes(100),
         n_layers=2,
         hidden_size=16,
@@ -206,6 +210,38 @@ def test_sglang_builder_launches_single_dgx_spark_command(
     assert cmd[cmd.index("--mem-fraction-static") + 1] == "0.75"
     assert "--trust-remote-code" in cmd
     assert cmd[cmd.index("--quantization") + 1] == "modelopt_fp4"
+
+
+def test_sglang_builder_defaults_gpt_oss_attention_to_triton(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EXO_SGLANG_SKIP_HEALTH_WAIT", "1")
+    monkeypatch.setenv("EXO_SGLANG_LAUNCH_CMD", "python -m sglang.launch_server")
+    monkeypatch.delenv("EXO_SGLANG_ATTENTION_BACKEND", raising=False)
+    monkeypatch.delenv("EXO_SGLANG_EXTRA_ARGS", raising=False)
+    processes: list[FakeProcess] = []
+
+    def process_factory(args: list[str], *, env: Mapping[str, str]) -> FakeProcess:
+        assert env
+        process = FakeProcess(cmd=args)
+        processes.append(process)
+        return process
+
+    _, cancel_receiver = mp_channel[TaskId]()
+    builder = SglangBuilder(
+        model_id=ModelId("openai/gpt-oss-20b"),
+        cancel_receiver=cancel_receiver,
+        process_factory=process_factory,
+    )
+
+    list(
+        builder.load(
+            _bound_instance(model_card=_model_card(model_id="openai/gpt-oss-20b"))
+        )
+    )
+
+    cmd = processes[0].cmd
+    assert cmd[cmd.index("--attention-backend") + 1] == "triton"
 
 
 def test_sglang_builder_adds_multi_node_dist_args(monkeypatch: MonkeyPatch) -> None:

@@ -23,7 +23,7 @@ Use this skill when asked to run exo on NVIDIA DGX Spark with the `Sglang` backe
 - SGLang owns CUDA serving and NCCL/tensor-parallel execution.
 - Start exo with `EXO_SGLANG_LAUNCH_CMD=$PWD/scripts/launch_sglang_dgx_spark_docker.sh`.
 - GPT-OSS-20B is MXFP4. Keep `EXO_SGLANG_QUANTIZATION` unset. Use `modelopt_fp4` only for NVIDIA NVFP4 models.
-- For GPT-OSS, add `EXO_SGLANG_EXTRA_ARGS="--reasoning-parser gpt-oss --tool-call-parser gpt-oss"`.
+- For GPT-OSS, use `EXO_SGLANG_ATTENTION_BACKEND=triton` and add `EXO_SGLANG_EXTRA_ARGS="--reasoning-parser gpt-oss --tool-call-parser gpt-oss"`.
 
 ## Setup
 
@@ -64,7 +64,7 @@ sg docker -c 'bash -lc "
   export EXO_DASHBOARD_DIR=/home/vmailthody/work/exo/dashboard/static
   export EXO_LIBP2P_NAMESPACE=dgx-spark-sglang-e2e
   export EXO_SGLANG_LAUNCH_CMD=/home/vmailthody/work/exo/scripts/launch_sglang_dgx_spark_docker.sh
-  export EXO_SGLANG_ATTENTION_BACKEND=flashinfer
+  export EXO_SGLANG_ATTENTION_BACKEND=triton
   export EXO_SGLANG_MEM_FRACTION_STATIC=0.75
   export EXO_SGLANG_EXTRA_ARGS=\"--reasoning-parser gpt-oss --tool-call-parser gpt-oss\"
   export TIKTOKEN_ENCODINGS_BASE=/home/vmailthody/work/exo/.codex/tiktoken_encodings
@@ -131,6 +131,7 @@ curl -N -X POST http://localhost:52415/v1/chat/completions \
 - Hugging Face auth failure: export `HF_TOKEN` before starting exo; the Docker launcher forwards it.
 - GPT-OSS tokenization error: verify `.codex/tiktoken_encodings` contains `o200k_base.tiktoken` and `cl100k_base.tiktoken`.
 - Quantization error: ensure `EXO_SGLANG_QUANTIZATION` is unset for `openai/gpt-oss-20b`.
+- Attention backend error: GPT-OSS in the NVIDIA SGLang container rejects `flashinfer`; use `EXO_SGLANG_ATTENTION_BACKEND=triton`.
 - SGLang exits during warmup: inspect `.codex/xdg-cache/exo/exo_log/runner_log/` and `.codex/xdg-cache/exo/exo_log/exo.log`.
 - OOM or UMA pressure: lower `EXO_SGLANG_MEM_FRACTION_STATIC`, close other GPU users, or flush host cache with `sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'`.
 

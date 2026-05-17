@@ -220,7 +220,9 @@ Start exo on every DGX Spark. Use the same namespace on all nodes so only these 
 
 ```bash
 export EXO_LIBP2P_NAMESPACE=dgx-spark-sglang
-export EXO_SGLANG_ATTENTION_BACKEND=flashinfer
+# GPT-OSS requires triton in the NVIDIA SGLang container. Leave this unset for
+# the model-aware default, or set it explicitly for reproducible runs.
+export EXO_SGLANG_ATTENTION_BACKEND=triton
 export EXO_SGLANG_MEM_FRACTION_STATIC=0.75
 
 # Required for NVIDIA NVFP4/FP4 model checkpoints.
@@ -235,7 +237,7 @@ On every additional DGX Spark, run the same command without `--force-master`:
 
 ```bash
 export EXO_LIBP2P_NAMESPACE=dgx-spark-sglang
-export EXO_SGLANG_ATTENTION_BACKEND=flashinfer
+export EXO_SGLANG_ATTENTION_BACKEND=triton
 export EXO_SGLANG_MEM_FRACTION_STATIC=0.75
 export EXO_SGLANG_QUANTIZATION=modelopt_fp4
 
@@ -401,7 +403,7 @@ exo supports several environment variables for configuration:
 | `EXO_SGLANG_LAUNCH_CMD` | Command prefix used to start SGLang for `Sglang` instances | `python -m sglang.launch_server` |
 | `EXO_SGLANG_HOST` | Host address SGLang binds inside each worker process | `0.0.0.0` |
 | `EXO_SGLANG_CLIENT_HOST` | Host address exo uses when calling the local rank-0 SGLang server | `127.0.0.1` |
-| `EXO_SGLANG_ATTENTION_BACKEND` | SGLang attention backend | `flashinfer` |
+| `EXO_SGLANG_ATTENTION_BACKEND` | SGLang attention backend. Unset uses `triton` for GPT-OSS and `flashinfer` otherwise. | Model-aware |
 | `EXO_SGLANG_MEM_FRACTION_STATIC` | SGLang static memory fraction | `0.75` |
 | `EXO_SGLANG_QUANTIZATION` | Optional SGLang quantization argument, such as `modelopt_fp4` for NVIDIA FP4 checkpoints | Auto for NVFP4 cards, otherwise unset |
 | `EXO_SGLANG_EXTRA_ARGS` | Extra arguments appended to the SGLang launch command | None |
