@@ -27,6 +27,7 @@ class Sharding(str, Enum):
 class Comm(str, Enum):
     RING = "MlxRing"  # ring all-reduce over network
     JACCL = "MlxJaccl"  # RDMA over Thunderbolt
+    SGLANG = "Sglang"  # SGLang CUDA serving
 
 
 _SETTLE_INITIAL_BACKOFF_S = 1.0
@@ -191,7 +192,7 @@ def resolve_model_short_id(
 def placement_filter(instance_meta: str, wanted: str) -> bool:
     s = (instance_meta or "").lower()
     if wanted == "both":
-        return ("ring" in s) or ("jaccl" in s)
+        return ("ring" in s) or ("jaccl" in s) or ("sglang" in s)
     return wanted in s
 
 
@@ -498,7 +499,7 @@ def add_common_instance_args(ap: argparse.ArgumentParser) -> None:
         help="Only consider placements using >= this many nodes.",
     )
     ap.add_argument(
-        "--instance-meta", choices=["ring", "jaccl", "both"], default="both"
+        "--instance-meta", choices=["ring", "jaccl", "sglang", "both"], default="both"
     )
     ap.add_argument(
         "--sharding", choices=["pipeline", "tensor", "both"], default="both"

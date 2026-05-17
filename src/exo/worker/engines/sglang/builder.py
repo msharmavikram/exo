@@ -11,10 +11,11 @@ from typing import BinaryIO, Literal, Protocol, cast
 
 import httpx
 
-from exo.api.types import ToolCallItem
+from exo.api.types import GenerationStats, ToolCallItem
 from exo.download.download_utils import build_model_path
 from exo.shared.models.model_cards import ModelCard, ModelId
 from exo.shared.types.chunks import Chunk, ErrorChunk, TokenChunk, ToolCallChunk
+from exo.shared.types.memory import Memory
 from exo.shared.types.tasks import (
     CANCEL_ALL_TASKS,
     GenerationTask,
@@ -208,6 +209,49 @@ def _tool_calls(message: Mapping[str, object]) -> list[ToolCallItem]:
             )
         )
     return parsed
+
+
+def _token_count(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        with contextlib.suppress(ValueError):
+            return int(value)
+    return None
+
+
+def _generation_stats(
+    data: Mapping[str, object], elapsed_seconds: float
+) -> GenerationStats | None:
+    usage = _object_mapping(data.get("usage"))
+    if usage is None:
+        return None
+
+    prompt_tokens = _token_count(usage.get("prompt_tokens"))
+    completion_tokens = _token_count(usage.get("completion_tokens"))
+    total_tokens = _token_count(usage.get("total_tokens"))
+    if (
+        completion_tokens is None
+        and prompt_tokens is not None
+        and total_tokens is not None
+    ):
+        completion_tokens = max(total_tokens - prompt_tokens, 0)
+
+    if prompt_tokens is None or completion_tokens is None:
+        return None
+
+    elapsed = max(elapsed_seconds, 1e-9)
+    return GenerationStats(
+        prompt_tps=prompt_tokens / elapsed,
+        generation_tps=completion_tokens / elapsed,
+        prompt_tokens=prompt_tokens,
+        generation_tokens=completion_tokens,
+        peak_memory_usage=Memory.from_bytes(0),
+    )
 
 
 def _sglang_quantization_arg(model_card: ModelCard) -> str | None:
@@ -413,11 +457,14 @@ class SglangEngine(Engine):
 
         self._raise_if_process_exited()
         payload = self._openai_chat_payload(task.task_params)
+        start_time = time.perf_counter()
         response = self._get_client().post("/v1/chat/completions", json=payload)
         response.raise_for_status()
+        elapsed_seconds = time.perf_counter() - start_time
         data = _object_mapping(response.json())
         if data is None:
             raise ValueError("SGLang returned a non-object response")
+        stats = _generation_stats(data, elapsed_seconds)
 
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -436,6 +483,7 @@ class SglangEngine(Engine):
                 model=self.model_id,
                 tool_calls=tools,
                 usage=None,
+                stats=stats,
             )
             return [tool_chunk]
 
@@ -458,6 +506,7 @@ class SglangEngine(Engine):
             token_id=-1,
             usage=None,
             finish_reason=_finish_reason(choice.get("finish_reason")),
+            stats=stats,
         )
         return [token_chunk]
 

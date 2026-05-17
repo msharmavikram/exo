@@ -89,7 +89,12 @@ class FakeClient:
                         "message": {"content": "hello from sglang"},
                         "finish_reason": "stop",
                     }
-                ]
+                ],
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 3,
+                    "total_tokens": 10,
+                },
             }
         )
 
@@ -259,9 +264,15 @@ def test_sglang_engine_maps_chat_completion_to_token_chunk() -> None:
     engine.submit(task)
     results = list(engine.step())
 
-    assert isinstance(results[0][1], TokenChunk)
-    assert results[0][1].text == "hello from sglang"
-    assert results[0][1].finish_reason == "stop"
+    token = results[0][1]
+    assert isinstance(token, TokenChunk)
+    assert token.text == "hello from sglang"
+    assert token.finish_reason == "stop"
+    assert token.stats is not None
+    assert token.stats.prompt_tokens == 7
+    assert token.stats.generation_tokens == 3
+    assert token.stats.prompt_tps > 0
+    assert token.stats.generation_tps > 0
     assert isinstance(results[1][1], FinishedResponse)
     payload = client.posts[0].json
     messages = payload["messages"]
