@@ -26,6 +26,7 @@ exo connects all your devices into an AI cluster. Not only does exo enable runni
 - **Topology-Aware Auto Parallel**: exo figures out the best way to split your model across all available devices based on a realtime view of your device topology. It takes into account device resources and network latency/bandwidth between each link.
 - **Tensor Parallelism**: exo supports sharding models, for up to 1.8x speedup on 2 devices and 3.2x speedup on 4 devices.
 - **MLX Support**: exo uses [MLX](https://github.com/ml-explore/mlx) as an inference backend and [MLX distributed](https://ml-explore.github.io/mlx/build/html/usage/distributed.html) for distributed communication.
+- **NVIDIA DGX Spark Support**: exo can place text-generation workloads on NVIDIA CUDA workers and launch [SGLang](https://github.com/sgl-project/sglang) for single-node or multi-worker tensor-parallel serving.
 - **Multiple API Compatibility**: Compatible with OpenAI Chat Completions API, Claude Messages API, OpenAI Responses API, and Ollama API - use your existing tools and clients.
 - **Custom Model Support**: Load custom models from HuggingFace hub to expand the range of available models.
 
@@ -191,7 +192,101 @@ uv run exo
 
 This starts the exo dashboard and API at http://localhost:52415/
 
-**Important note for Linux users:** Currently, exo runs on CPU on Linux. GPU support for Linux platforms is under development. If you'd like to see support for your specific Linux hardware, please [search for existing feature requests](https://github.com/exo-explore/exo/issues) or create a new one.
+**Important note for Linux users:** Generic Linux acceleration support is still hardware-specific. NVIDIA DGX Spark systems can use the SGLang backend described below.
+
+#### Run on NVIDIA DGX Spark with SGLang
+
+The DGX Spark path keeps exo responsible for discovery, placement, API compatibility, and task orchestration, while SGLang runs the CUDA serving process on each selected worker. In a multi-worker placement, exo creates one `SglangInstance`, assigns one rank per DGX Spark node, starts SGLang on every rank, and sends chat-completion requests to rank 0. SGLang handles CUDA/NCCL tensor parallel execution across the workers.
+
+**Prerequisites:**
+
+- NVIDIA driver and CUDA visible to `nvidia-smi`
+- Python 3.13 through `uv`
+- SGLang installed in the same environment that runs exo, or a custom launcher set with `EXO_SGLANG_LAUNCH_CMD`
+- `nvidia-ml-py`, installed by the `mlx-cuda13` extra, so exo can detect CUDA workers and advertise `SglangCuda`
+
+Install the exo CUDA dependencies and verify that SGLang is importable:
+
+```bash
+uv sync --extra mlx-cuda13
+
+# Install SGLang for your CUDA/PyTorch build using the upstream
+# SGLang installation docs: https://docs.sglang.io/get_started/install.html
+# At minimum, this command must work:
+uv run python -m sglang.launch_server --help
+```
+
+Start exo on every DGX Spark. Use the same namespace on all nodes so only these workers join the same cluster.
+
+```bash
+export EXO_LIBP2P_NAMESPACE=dgx-spark-sglang
+export EXO_SGLANG_ATTENTION_BACKEND=flashinfer
+export EXO_SGLANG_MEM_FRACTION_STATIC=0.75
+
+# Required for NVIDIA NVFP4/FP4 model checkpoints.
+# Leave unset for bf16/fp16/int8 models unless SGLang requires a quantization flag.
+export EXO_SGLANG_QUANTIZATION=modelopt_fp4
+
+# First DGX Spark: keep the API/dashboard stable on this node.
+uv run --extra mlx-cuda13 exo --force-master --libp2p-port 52416
+```
+
+On every additional DGX Spark, run the same command without `--force-master`:
+
+```bash
+export EXO_LIBP2P_NAMESPACE=dgx-spark-sglang
+export EXO_SGLANG_ATTENTION_BACKEND=flashinfer
+export EXO_SGLANG_MEM_FRACTION_STATIC=0.75
+export EXO_SGLANG_QUANTIZATION=modelopt_fp4
+
+uv run --extra mlx-cuda13 exo --libp2p-port 52416
+```
+
+If multicast discovery is unavailable on your network, start the first node with a fixed libp2p port as shown above and pass its libp2p multiaddr to the other nodes with `EXO_BOOTSTRAP_PEERS` or `--bootstrap-peers`.
+
+Once all workers are visible in the dashboard at `http://<master-node-ip>:52415`, create an SGLang placement from the master node. Use `min_nodes: 1` for a single DGX Spark or increase it to the number of DGX Spark workers you want in the tensor-parallel group.
+
+```bash
+curl -X POST http://localhost:52415/place_instance \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model_id": "<huggingface-model-id>",
+    "sharding": "Tensor",
+    "instance_meta": "Sglang",
+    "min_nodes": 2
+  }'
+```
+
+Preview placements first if you want to confirm exo sees `Sglang` as a valid option:
+
+```bash
+curl "http://localhost:52415/instance/previews?model_id=<huggingface-model-id>" \
+  | jq '.previews[] | select(.instance_meta == "Sglang")'
+```
+
+Send requests through the normal OpenAI-compatible endpoint:
+
+```bash
+curl -N -X POST http://localhost:52415/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "<huggingface-model-id>",
+    "messages": [
+      {"role": "user", "content": "Write a short DGX Spark status check."}
+    ],
+    "stream": true,
+    "max_tokens": 128
+  }'
+```
+
+Useful SGLang overrides:
+
+- `EXO_SGLANG_LAUNCH_CMD`: launcher prefix, default `python -m sglang.launch_server`
+- `EXO_SGLANG_EXTRA_ARGS`: appended verbatim to the SGLang launch command
+- `EXO_SGLANG_CLIENT_HOST`: host exo uses to call rank 0 locally, default `127.0.0.1`
+- `EXO_SGLANG_STARTUP_TIMEOUT`: seconds to wait for `/health`, default `600`
+
+For model storage, use `EXO_MODELS_DIRS` or `EXO_MODELS_READ_ONLY_DIRS` as described below. The SGLang builder will pass the local exo model path when the checkpoint is already present, otherwise it passes the Hugging Face model ID to SGLang.
 
 **Configuration Options:**
 
@@ -303,6 +398,15 @@ exo supports several environment variables for configuration:
 | `EXO_LIBP2P_NAMESPACE` | Custom namespace for cluster isolation | None |
 | `EXO_FAST_SYNCH` | Control MLX_METAL_FAST_SYNCH behavior (for JACCL backend) | Auto |
 | `EXO_TRACING_ENABLED` | Enable distributed tracing for performance analysis | `false` |
+| `EXO_SGLANG_LAUNCH_CMD` | Command prefix used to start SGLang for `Sglang` instances | `python -m sglang.launch_server` |
+| `EXO_SGLANG_HOST` | Host address SGLang binds inside each worker process | `0.0.0.0` |
+| `EXO_SGLANG_CLIENT_HOST` | Host address exo uses when calling the local rank-0 SGLang server | `127.0.0.1` |
+| `EXO_SGLANG_ATTENTION_BACKEND` | SGLang attention backend | `flashinfer` |
+| `EXO_SGLANG_MEM_FRACTION_STATIC` | SGLang static memory fraction | `0.75` |
+| `EXO_SGLANG_QUANTIZATION` | Optional SGLang quantization argument, such as `modelopt_fp4` for NVIDIA FP4 checkpoints | Auto for NVFP4 cards, otherwise unset |
+| `EXO_SGLANG_EXTRA_ARGS` | Extra arguments appended to the SGLang launch command | None |
+| `EXO_SGLANG_STARTUP_TIMEOUT` | Seconds to wait for SGLang health checks during worker warmup | `600` |
+| `EXO_SGLANG_SKIP_HEALTH_WAIT` | Skip SGLang `/health` polling during warmup, mainly for tests/debugging | unset |
 
 **Example usage:**
 

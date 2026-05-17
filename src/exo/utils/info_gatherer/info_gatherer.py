@@ -379,6 +379,7 @@ class NodeBackends(TaggedModel):
             backends.append(Backend.MlxMetal)
         if await to_thread.run_sync(_has_nvml_cuda):
             backends.append(Backend.MlxCuda)
+            backends.append(Backend.SglangCuda)
             backends.append(Backend.Vllm)
         return cls(backends=backends)
 

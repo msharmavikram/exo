@@ -459,3 +459,39 @@ def get_mlx_jaccl_coordinators(
         n: f"{get_ip_for_node(n)}:{coordinator_port}"
         for n in cycle_digraph.list_nodes()
     }
+
+
+def get_sglang_dist_init_addrs(
+    selected_cycle: Cycle,
+    coordinator_port: int,
+    cycle_digraph: Topology,
+    node_network: Mapping[NodeId, NodeNetworkInfo],
+) -> dict[NodeId, str]:
+    """Return per-node SGLang/NCCL init addresses for rank 0.
+
+    Rank 0 binds locally, while every other rank receives an address for rank 0
+    that is reachable from that node's view of the topology.
+    """
+    if len(selected_cycle.node_ids) == 0:
+        return {}
+
+    coordinator = selected_cycle.node_ids[0]
+
+    def get_ip_for_node(node_id: NodeId) -> str:
+        if node_id == coordinator:
+            return "0.0.0.0"
+
+        ip = find_ip_prioritised(
+            node_id,
+            coordinator,
+            cycle_digraph,
+            node_network,
+            ring=False,
+        )
+        if ip is None:
+            raise ValueError(
+                "SGLang backend requires all participating nodes to reach rank 0"
+            )
+        return ip
+
+    return {n: f"{get_ip_for_node(n)}:{coordinator_port}" for n in selected_cycle}

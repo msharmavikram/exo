@@ -15,6 +15,7 @@ class InstanceId(Id):
 class InstanceMeta(str, Enum):
     MlxRing = "MlxRing"
     MlxJaccl = "MlxJaccl"
+    Sglang = "Sglang"
 
 
 class BaseInstance(TaggedModel):
@@ -35,8 +36,14 @@ class MlxJacclInstance(BaseInstance):
     jaccl_coordinators: dict[NodeId, str]
 
 
+class SglangInstance(BaseInstance):
+    service_port: int
+    dist_init_port: int
+    dist_init_addrs: dict[NodeId, str]
+
+
 # TODO: Single node instance
-Instance = MlxRingInstance | MlxJacclInstance
+Instance = MlxRingInstance | MlxJacclInstance | SglangInstance
 
 
 class BoundInstance(FrozenModel):

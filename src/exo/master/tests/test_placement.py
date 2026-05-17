@@ -48,9 +48,14 @@ from exo.shared.types.worker.instances import (
     InstanceMeta,
     MlxJacclInstance,
     MlxRingInstance,
+    SglangInstance,
 )
 from exo.shared.types.worker.runners import ShardAssignments
-from exo.shared.types.worker.shards import PipelineShardMetadata, Sharding
+from exo.shared.types.worker.shards import (
+    PipelineShardMetadata,
+    Sharding,
+    TensorShardMetadata,
+)
 
 
 @pytest.fixture
@@ -1056,3 +1061,93 @@ def test_mlx_jaccl_rejects_cuda_only_cycle(model_card: ModelCard):
             node_backends,
             node_rdma_ctl=node_rdma_ctl,
         )
+
+
+def test_place_sglang_single_dgx_spark_uses_sglang_instance(model_card: ModelCard):
+    topology = Topology()
+    node_id = NodeId()
+    topology.add_node(node_id)
+    node_memory = {node_id: create_node_memory(2000)}
+    node_network = {node_id: create_node_network()}
+    node_backends = {node_id: [Backend.SglangCuda]}
+
+    placements = place_instance(
+        PlaceInstance(
+            command_id=CommandId(),
+            model_card=model_card.model_copy(
+                update={
+                    "backends": [Backend.SglangCuda],
+                    "storage_size": Memory.from_bytes(1000),
+                }
+            ),
+            sharding=Sharding.Pipeline,
+            instance_meta=InstanceMeta.Sglang,
+            min_nodes=1,
+        ),
+        topology,
+        {},
+        node_memory,
+        node_network,
+        node_backends,
+    )
+
+    instance = next(iter(placements.values()))
+    assert isinstance(instance, SglangInstance)
+    runner_id = instance.shard_assignments.node_to_runner[node_id]
+    shard = instance.shard_assignments.runner_to_shard[runner_id]
+    assert isinstance(shard, TensorShardMetadata)
+    assert shard.device_rank == 0
+    assert shard.world_size == 1
+    assert instance.dist_init_addrs[node_id].startswith("0.0.0.0:")
+
+
+def test_place_sglang_two_dgx_sparks_builds_dist_init_addrs(model_card: ModelCard):
+    topology = Topology()
+    node_a = NodeId()
+    node_b = NodeId()
+    for node in (node_a, node_b):
+        topology.add_node(node)
+    topology.add_connection(
+        Connection(source=node_a, sink=node_b, edge=create_socket_connection(2))
+    )
+    topology.add_connection(
+        Connection(source=node_b, sink=node_a, edge=create_socket_connection(1))
+    )
+
+    node_memory = {node_a: create_node_memory(1000), node_b: create_node_memory(1000)}
+    node_network = {node_a: create_node_network(), node_b: create_node_network()}
+    node_backends = {node: [Backend.SglangCuda] for node in (node_a, node_b)}
+
+    placements = place_instance(
+        PlaceInstance(
+            command_id=CommandId(),
+            model_card=model_card.model_copy(
+                update={
+                    "backends": [Backend.SglangCuda],
+                    "n_layers": 12,
+                    "hidden_size": 32,
+                    "storage_size": Memory.from_bytes(1500),
+                }
+            ),
+            sharding=Sharding.Tensor,
+            instance_meta=InstanceMeta.Sglang,
+            min_nodes=2,
+        ),
+        topology,
+        {},
+        node_memory,
+        node_network,
+        node_backends,
+    )
+
+    instance = next(iter(placements.values()))
+    assert isinstance(instance, SglangInstance)
+    assert set(instance.shard_assignments.node_to_runner) == {node_a, node_b}
+    assert sorted(
+        shard.device_rank
+        for shard in instance.shard_assignments.runner_to_shard.values()
+    ) == [0, 1]
+    assert any(addr.startswith("0.0.0.0:") for addr in instance.dist_init_addrs.values())
+    assert any(
+        addr.startswith("169.254.0.") for addr in instance.dist_init_addrs.values()
+    )

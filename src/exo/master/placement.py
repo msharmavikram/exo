@@ -8,6 +8,7 @@ from exo.master.placement_utils import (
     get_mlx_jaccl_coordinators,
     get_mlx_jaccl_devices_matrix,
     get_mlx_ring_hosts_by_node,
+    get_sglang_dist_init_addrs,
     get_shard_assignments,
     get_smallest_cycles,
 )
@@ -44,6 +45,7 @@ from exo.shared.types.worker.instances import (
     InstanceMeta,
     MlxJacclInstance,
     MlxRingInstance,
+    SglangInstance,
 )
 from exo.shared.types.worker.shards import Sharding
 from exo.utils.ports import random_ephemeral_port
@@ -51,6 +53,7 @@ from exo.utils.ports import random_ephemeral_port
 INSTANCE_META_BACKENDS: dict[InstanceMeta, list[Backend]] = {
     InstanceMeta.MlxRing: [Backend.MlxMetal, Backend.MlxCuda, Backend.MlxCpu],
     InstanceMeta.MlxJaccl: [Backend.MlxMetal],
+    InstanceMeta.Sglang: [Backend.SglangCuda],
 }
 
 
@@ -130,6 +133,9 @@ def place_instance(
     if len(cycles_with_sufficient_memory) == 0:
         raise ValueError("No cycles found with sufficient memory")
 
+    if command.instance_meta == InstanceMeta.Sglang:
+        command = command.model_copy(update={"sharding": Sharding.Tensor})
+
     if command.sharding == Sharding.Tensor:
         if not command.model_card.supports_tensor:
             raise ValueError(
@@ -160,6 +166,7 @@ def place_instance(
         raise ValueError(
             "Pipeline parallelism is not supported for DeepSeek V3.1 (8-bit)"
         )
+
     if (
         command.sharding == Sharding.Pipeline
         and command.model_card.base_model.startswith("Gemma 4")
@@ -242,8 +249,9 @@ def place_instance(
         ),
     )
 
-    # Single-node: force Pipeline/Ring (Tensor and Jaccl require multi-node)
-    if len(selected_cycle) == 1:
+    # Single-node MLX: force Pipeline/Ring (Tensor and Jaccl require multi-node).
+    # SGLang uses tensor parallel terminology even when tp-size is 1.
+    if len(selected_cycle) == 1 and command.instance_meta != InstanceMeta.Sglang:
         command = command.model_copy(
             update={
                 "instance_meta": InstanceMeta.MlxRing,
@@ -306,6 +314,22 @@ def place_instance(
                 shard_assignments=shard_assignments,
                 hosts_by_node=hosts_by_node,
                 ephemeral_port=ephemeral_port,
+            )
+        case InstanceMeta.Sglang:
+            service_port = random_ephemeral_port()
+            dist_init_port = random_ephemeral_port()
+            dist_init_addrs = get_sglang_dist_init_addrs(
+                selected_cycle=selected_cycle,
+                coordinator_port=dist_init_port,
+                cycle_digraph=cycle_digraph,
+                node_network=node_network,
+            )
+            target_instances[instance_id] = SglangInstance(
+                instance_id=instance_id,
+                shard_assignments=shard_assignments,
+                service_port=service_port,
+                dist_init_port=dist_init_port,
+                dist_init_addrs=dist_init_addrs,
             )
 
     return target_instances

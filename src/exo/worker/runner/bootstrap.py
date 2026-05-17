@@ -8,7 +8,7 @@ import loguru
 
 from exo.shared.types.events import Event
 from exo.shared.types.tasks import Task, TaskId
-from exo.shared.types.worker.instances import BoundInstance
+from exo.shared.types.worker.instances import BoundInstance, SglangInstance
 from exo.utils.channels import ClosedResourceError, MpReceiver, MpSender
 from exo.worker.engines.base import Builder
 
@@ -70,6 +70,13 @@ def entrypoint(
 
             builder = MfluxBuilder(
                 event_sender_downcast, cancel_receiver, bound_instance.bound_shard
+            )
+        elif isinstance(bound_instance.instance, SglangInstance):
+            from exo.worker.engines.sglang.builder import SglangBuilder
+
+            builder = SglangBuilder(
+                model_id=bound_instance.bound_shard.model_card.model_id,
+                cancel_receiver=cancel_receiver,
             )
         else:
             from exo.worker.engines.mlx.patches import apply_mlx_patches
